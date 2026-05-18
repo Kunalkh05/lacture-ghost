@@ -2,12 +2,13 @@
 # Install with: pip install -r requirements.txt
 #
 # Also required (not pip-installable):
-#   spaCy English model:
-#     python -m spacy download en_core_web_sm
+#   spaCy medium model (word vectors for semantic similarity):
+#     python -m spacy download en_core_web_md
 #
 #   Tesseract OCR binary:
-#     Mac:     brew install tesseract
+#     Mac:     brew install tesseract poppler
 #     Windows: https://github.com/UB-Mannheim/tesseract/wiki
+#              https://github.com/oschwartz10612/poppler-windows/releases
 
 # ── Core AI / ML ──────────────────────────────────────────────────────────────
 openai-whisper==20231117
@@ -18,11 +19,14 @@ pytesseract==0.3.10
 Pillow==10.3.0
 pdf2image==1.17.0
 
+# ── NLP / ML utilities ────────────────────────────────────────────────────────
+scikit-learn==1.4.2
+
 # ── Web UI ────────────────────────────────────────────────────────────────────
 streamlit==1.35.0
 
-# ── Numerics (whisper dependency, explicit pin for reproducibility) ────────────
+# ── Numerics ──────────────────────────────────────────────────────────────────
 numpy==1.26.4
 
-# ── Standard library modules used (no install needed, listed for clarity) ─────
-# collections, tempfile, pathlib, json, re, string, warnings, datetime
+# ── Standard library modules (no install needed, listed for documentation) ────
+# collections, tempfile, pathlib, json, re, string, warnings, datetime, math

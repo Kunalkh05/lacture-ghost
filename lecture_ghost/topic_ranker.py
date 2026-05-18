@@ -2,13 +2,15 @@
 topic_ranker.py — Aggregates topics across all sources and ranks the top N by
 predicted exam likelihood.
 
-Applies source-specific boosts:
-  - Topics appearing in past exam papers → ×1.5
-  - Topics appearing in assignments       → ×1.2
+Accuracy improvements over v1:
+  - IDF-weighted ranking: rare high-scoring topics rank above common mediocre ones
+  - Boosts still applied (×1.5 exam, ×1.2 assignment) after IDF weighting
+  - Ties broken by lexicographic order for determinism
 """
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 
 import config
@@ -23,26 +25,62 @@ def aggregate_topic_scores(scored_chunks: list[dict]) -> dict[str, float]:
     """
     Sum the final_score of every chunk that mentions a given topic.
 
-    A topic's cumulative score reflects both how frequently it appears across
-    the lecture and how important (by combined signals) those appearances were.
-
     Args:
-        scored_chunks: List of chunk dicts produced by ``scorer.score_all_chunks``.
-                       Each dict must contain ``"chunk_topics"`` (list[str]) and
-                       ``"final_score"`` (float).
+        scored_chunks: List of chunk dicts with ``"chunk_topics"`` and ``"final_score"``.
 
     Returns:
-        A dict mapping each unique topic string to its cumulative score.
-        Returns an empty dict if *scored_chunks* is empty.
+        Dict mapping topic → cumulative score.
     """
     topic_scores: dict[str, float] = defaultdict(float)
-
     for chunk in scored_chunks:
-        chunk_score = chunk.get("final_score", 0.0)
+        score = chunk.get("final_score", 0.0)
         for topic in chunk.get("chunk_topics", []):
-            topic_scores[topic] += chunk_score
-
+            topic_scores[topic] += score
     return dict(topic_scores)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IDF weighting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_idf_weighted_scores(
+    scored_chunks: list[dict],
+    raw_scores: dict[str, float],
+) -> dict[str, float]:
+    """
+    Re-weight cumulative topic scores by an Inverse Document Frequency (IDF)
+    factor to penalise topics that appear in nearly every chunk.
+
+    Formula:
+        idf(topic) = log( total_chunks / (chunks_containing_topic + 1) ) + 1
+        idf_score  = raw_score * idf(topic)
+
+    A topic appearing in only 2 of 20 chunks but with high chunk scores will
+    rank above a topic appearing in 18 of 20 chunks with mediocre scores.
+
+    Args:
+        scored_chunks: Full list of scored chunk dicts.
+        raw_scores:    Dict of topic → cumulative raw score.
+
+    Returns:
+        Dict of topic → IDF-weighted score.
+    """
+    total_chunks = max(len(scored_chunks), 1)
+
+    # Count how many chunks contain each topic
+    doc_freq: dict[str, int] = defaultdict(int)
+    for chunk in scored_chunks:
+        seen_in_chunk = set(chunk.get("chunk_topics", []))
+        for topic in seen_in_chunk:
+            doc_freq[topic] += 1
+
+    idf_weighted: dict[str, float] = {}
+    for topic, score in raw_scores.items():
+        df = doc_freq.get(topic, 0)
+        idf = math.log(total_chunks / (df + 1)) + 1.0
+        idf_weighted[topic] = score * idf
+
+    return idf_weighted
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,51 +95,50 @@ def rank_topics(
     """
     Produce a ranked list of predicted exam topics with confidence scores.
 
-    Ranking pipeline:
-      1. Aggregate raw cumulative scores per topic from ``scored_chunks``.
-      2. Build reference sets of topics found in exam papers and assignments.
-      3. Apply boosts:
-           - Exam paper match  → raw_score × 1.5
-           - Assignment match  → raw_score × 1.2
-           - Both              → boosts stack multiplicatively
-      4. Normalise all boosted scores to [0.0, 1.0].
-      5. Return the top *top_n* topics sorted by descending confidence.
+    Ranking pipeline (v2 — IDF-weighted):
+      1. Aggregate raw cumulative scores per topic.
+      2. Apply IDF weighting to penalise overly common topics.
+      3. Build reference sets from exam papers and assignments.
+      4. Apply source boosts (exam ×1.5, assignment ×1.2; stack multiplicatively).
+      5. Normalise all scores to [0.0, 1.0].
+      6. Return top *top_n* sorted by descending confidence.
 
     Args:
         scored_chunks: Enriched chunk list from ``scorer.score_all_chunks``.
-        ocr_results:   List of processed OCR source dicts from
-                       ``ocr_pipeline.run_ocr_pipeline``.
-        top_n:         Maximum number of topics to return (default 10).
+        ocr_results:   Processed OCR source dicts from ``ocr_pipeline.run_ocr_pipeline``.
+        top_n:         Maximum topics to return (default 10).
 
     Returns:
-        A list of up to *top_n* dicts each containing:
-          - ``topic``                (str)
-          - ``confidence``           (float, 0-1)
-          - ``appeared_in_exam``     (bool)
+        List of up to *top_n* dicts:
+          - ``topic``                  (str)
+          - ``confidence``             (float 0-1)
+          - ``appeared_in_exam``       (bool)
           - ``appeared_in_assignment`` (bool)
-
-        Sorted by ``confidence`` descending.
+        Sorted by descending confidence.
     """
     raw_scores = aggregate_topic_scores(scored_chunks)
 
     if not raw_scores:
         return []
 
-    # ── Build exam / assignment reference sets from OCR results ──────────
+    # ── IDF weighting ─────────────────────────────────────────────────────
+    idf_scores = _compute_idf_weighted_scores(scored_chunks, raw_scores)
+
+    # ── Build reference sets ──────────────────────────────────────────────
     exam_topic_set: set[str] = set()
     assignment_topic_set: set[str] = set()
 
-    for ocr_item in ocr_results:
-        src_type = ocr_item.get("source_type", "")
-        topics = ocr_item.get("topics", [])
-        if src_type == "exam_paper":
+    for item in ocr_results:
+        src = item.get("source_type", "")
+        topics = item.get("topics", [])
+        if src == "exam_paper":
             exam_topic_set.update(topics)
-        elif src_type == "assignment":
+        elif src == "assignment":
             assignment_topic_set.update(topics)
 
-    # ── Apply boosts ──────────────────────────────────────────────────────
+    # ── Apply source boosts ───────────────────────────────────────────────
     boosted: dict[str, float] = {}
-    for topic, score in raw_scores.items():
+    for topic, score in idf_scores.items():
         boosted_score = score
         if topic in exam_topic_set:
             boosted_score *= config.EXAM_PAPER_BOOST
@@ -109,28 +146,23 @@ def rank_topics(
             boosted_score *= config.ASSIGNMENT_BOOST
         boosted[topic] = boosted_score
 
-    # ── Normalise to [0, 1] ───────────────────────────────────────────────
-    if boosted:
-        min_s = min(boosted.values())
-        max_s = max(boosted.values())
-    else:
-        min_s = max_s = 0.0
+    # ── Normalise ─────────────────────────────────────────────────────────
+    min_s = min(boosted.values()) if boosted else 0.0
+    max_s = max(boosted.values()) if boosted else 0.0
 
     ranked: list[dict] = []
     for topic, score in boosted.items():
         confidence = utils.normalize_score(score, min_s, max_s)
-        ranked.append(
-            {
-                "topic": topic,
-                "confidence": round(confidence, 4),
-                "appeared_in_exam": topic in exam_topic_set,
-                "appeared_in_assignment": topic in assignment_topic_set,
-            }
-        )
+        ranked.append({
+            "topic": topic,
+            "confidence": round(confidence, 4),
+            "appeared_in_exam": topic in exam_topic_set,
+            "appeared_in_assignment": topic in assignment_topic_set,
+        })
 
-    # Sort descending by confidence, alphabetically for ties
+    # Sort: descending confidence, then alphabetical for deterministic ties
     ranked.sort(key=lambda x: (-x["confidence"], x["topic"]))
-
     result = ranked[:top_n]
+
     print(f"[topic_ranker] Ranked {len(raw_scores)} unique topics → returning top {len(result)}.")
     return result
