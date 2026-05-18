@@ -1,0 +1,28 @@
+# Lecture Ghost — Python dependencies
+# Install with: pip install -r requirements.txt
+#
+# Also required (not pip-installable):
+#   spaCy English model:
+#     python -m spacy download en_core_web_sm
+#
+#   Tesseract OCR binary:
+#     Mac:     brew install tesseract
+#     Windows: https://github.com/UB-Mannheim/tesseract/wiki
+
+# ── Core AI / ML ──────────────────────────────────────────────────────────────
+openai-whisper==20231117
+spacy==3.7.4
+
+# ── OCR ───────────────────────────────────────────────────────────────────────
+pytesseract==0.3.10
+Pillow==10.3.0
+pdf2image==1.17.0
+
+# ── Web UI ────────────────────────────────────────────────────────────────────
+streamlit==1.35.0
+
+# ── Numerics (whisper dependency, explicit pin for reproducibility) ────────────
+numpy==1.26.4
+
+# ── Standard library modules used (no install needed, listed for clarity) ─────
+# collections, tempfile, pathlib, json, re, string, warnings, datetime
